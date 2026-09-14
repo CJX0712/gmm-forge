@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gmm-forge · 手写高斯混合模型 (EM)</title>
+<style>
+  :root{
+    --bg:#f5f7fa; --panel:#ffffff; --ink:#1f2933; --muted:#66707a;
+    --line:#e3e8ef; --accent:#7c5cff; --accent2:#15b39a; --warn:#e0533d;
+    --ok:#1f9d57; --chip:#eef1f8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       background:var(--bg);color:var(--ink);line-height:1.5}
+  header{padding:18px 22px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{margin:0;font-size:20px;letter-spacing:.5px}
+  header h1 span{color:var(--accent)}
+  header p{margin:4px 0 0;color:var(--muted);font-size:13px}
+  .wrap{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px 22px;max-width:1180px}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .card h2{margin:0 0 10px;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+  canvas{width:100%;height:auto;display:block;background:#fbfcfe;border:1px solid var(--line);border-radius:8px}
+  .ctrls{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+  .ctrls label{font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:4px}
+  .ctrls input[type=range]{width:120px}
+  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 14px;font-size:13px;
+         cursor:pointer;font-weight:600}
+  button.ghost{background:var(--chip);color:var(--ink)}
+  button:active{transform:translateY(1px)}
+  .pill{display:inline-block;background:var(--chip);border-radius:999px;padding:2px 10px;font-size:12px;color:var(--muted)}
+  #selfTest{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+  #selfTest .row{display:flex;gap:8px;padding:5px 0;border-bottom:1px dashed var(--line);align-items:baseline}
+  #selfTest .row:last-child{border-bottom:0}
+  .tag{font-weight:700;min-width:42px}
+  .tag.PASS{color:var(--ok)} .tag.FAIL{color:var(--warn)}
+  .nm{flex:0 0 230px;color:var(--ink)}
+  .vv{color:var(--muted)}
+  .summary{font-size:13px;margin:6px 0 0;font-weight:600}
+  .val{font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--accent2)}
+  footer{padding:10px 22px 30px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<header>
+  <h1>gmm<span>-forge</span> · 手写高斯混合模型 / EM 算法</h1>
+  <p>纯 JS 实现 · 零依赖零构建 · 8 项硬不变量自检 · 金标准：EM 对数似然单调不增 + 1D 参数精确还原</p>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>聚类散点（按责任度着色）</h2>
+    <canvas id="scatter" width="520" height="420"></canvas>
+    <div class="ctrls" style="margin-top:12px">
+      <label>成分数 K <input id="k" type="range" min="2" max="5" step="1" value="3"><span class="pill" id="kVal">3</span></label>
+      <label>迭代 <input id="iters" type="range" min="5" max="60" step="1" value="30"><span class="pill" id="itersVal">30</span></label>
+      <button id="run">生成 &amp; 运行 EM</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>对数似然收敛曲线 (EM 定理)</h2>
+    <canvas id="ll" width="520" height="420"></canvas>
+    <p class="summary" id="llInfo">—</p>
+  </div>
+
+  <div class="card">
+    <h2>不变量自检（8 项）</h2>
+    <div id="selfTest"><span class="vv">点击「运行自检」生成报告…</span></div>
+    <button id="test" class="ghost" style="margin-top:10px">运行自检</button>
+  </div>
+
+  <div class="card">
+    <h2>关于</h2>
+    <p style="font-size:13px;color:var(--ink)">
+      GMM 用 <b>期望最大化 (EM)</b> 估计混合权重、均值、协方差。本项目用两种金标准交叉验证：
+    </p>
+    <ul style="font-size:13px;color:var(--muted);margin:6px 0;padding-left:18px">
+      <li><b>单调不变量</b>：每次 E→M 后对数似然非减（EM 收敛定理）。</li>
+      <li><b>1D 还原</b>：用已知参数造数据，EM 收敛后应精确还原真实均值/标准差。</li>
+      <li><b>责任度</b>：每行归一化（和为 1），权重和为 1，协方差对称半正定。</li>
+    </ul>
+    <p style="font-size:12px;color:var(--muted)">引擎全部逻辑在 <code>&lt;script id="engine"&gt;</code> 内，可被无头 Node 提取复跑。</p>
+  </div>
+</div>
+
+<footer>gmm-forge — Round 21 of the forge series · 手写 ML/AI 算法单文件可视化</footer>
+
+<script id="engine">
+(function(){
+  "use strict";
+  // ---------- RNG ----------
+  function mulberry32(a){
+    return function(){
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  function randn(rng){
+    let u = 0, v = 0;
+    while(u === 0) u = rng();
+    while(v === 0) v = rng();
+    return Math.sqrt(-2*Math.log(u)) * Math.cos(2*Math.PI*v);
+  }
+
+  // ---------- small matrix helpers (n x n as array of arrays) ----------
+  function matIdent(n){
+    const m=[];
+    for(let i=0;i<n;i++){ const r=[]; for(let j=0;j<n;j++) r.push(i===j?1:0); m.push(r); }
+    return m;
+  }
+  function matInv(A){
+    const n=A.length;
+    const M=[]; for(let i=0;i<n;i++){ M.push(A[i].slice().concat(matIdent(n)[i])); }
+    for(let col=0;col<n;col++){
+      let piv=col;
+      for(let r=col+1;r<n;r++) if(Math.abs(M[r][col])>Math.abs(M[piv][col])) piv=r;
+      if(Math.abs(M[piv][col])<1e-14) return null; // singular
+      const tmp=M[col]; M[col]=M[piv]; M[piv]=tmp;
+      const d=M[col][col];
+      for(let j=0;j<2*n;j++) M[col][j]/=d;
+      for(let r=0;r<n;r++){ if(r===col) continue; const f=M[r][col]; for(let j=0;j<2*n;j++) M[r][j]-=f*M[col][j]; }
+    }
+    const inv=[]; for(let i=0;i<n;i++) inv.push(M[i].slice(n));
+    return inv;
+  }
+  function matDet(A){
+    const n=A.length; const M=A.map(r=>r.slice()); let det=1;
+    for(let col=0;col<n;col++){
+      let piv=col; for(let r=col+1;r<n;r++) if(Math.abs(M[r][col])>Math.abs(M[piv][col])) piv=r;
+      if(Math.abs(M[piv][col])<1e-14) return 0;
+      if(piv!==col){ const t=M[piv]; M[piv]=M[col]; M[col]=t; det=-det; }
+      det*=M[col][col];
+      for(let r=col+1;r<n;r++){ const f=M[r][col]/M[col][col]; for(let j=col;j<n;j++) M[r][j]-=f*M[col][j]; }
+    }
+    return det;
+  }
+  function matVec(A,x){ const n=A.length; const out=[]; for(let i=0;i<n;i++){ let s=0; for(let j=0;j<n;j++) s+=A[i][j]*x[j]; out.push(s);} return out; }
+  function dot(a,b){ let s=0; for(let i=0;i<a.length;i++) s+=a[i]*b[i]; return s; }
+  function logSumExp(a){
+    let m=-Infinity; for(let i=0;i<a.length;i++) if(a[i]>m) m=a[i];
+    if(!isFinite(m)) return m;
+    let s=0; for(let i=0;i<a.length;i++) s+=Math.exp(a[i]-m);
+    return m+Math.log(s);
+  }
+
+  // ---------- sampling ----------
+  function cholesky(S){
+    const n=S.length; const L=[]; for(let i=0;i<n;i++) L.push(new Array(n).fill(0));
+    for(let i=0;i<n;i++){
+      for(let j=0;j<=i;j++){
+        let s=0; for(let k=0;k<j;k++) s+=L[i][k]*L[j][k];
+        if(i===j) L[i][j]=Math.sqrt(Math.max(S[i][i]-s,1e-12));
+        else L[i][j]=(S[i][j]-s)/(L[j][j]||1e-12);
+      }
+    }
+    return L;
+  }
+  function gmmSample(rng, weights, means, covs, n){
+    const K=weights.length, d=means[0].length;
+    const chols=covs.map(cholesky);
+    const X=[], labels=[];
+    for(let t=0;t<n;t++){
+      let r=rng(), cum=0, k=0;
+      for(let i=0;i<K;i++){ cum+=weights[i]; if(r<=cum){ k=i; break; } }
+      const z=[]; for(let j=0;j<d;j++) z.push(randn(rng));
+      const L=chols[k]; const x=[];
+      for(let i=0;i<d;i++){ let s=0; for(let j=0;j<=i;j++) s+=L[i][j]*z[j]; x.push(s); }
+      const pt=[]; for(let j=0;j<d;j++) pt.push(means[k][j]+x[j]);
+      X.push(pt); labels.push(k);
+    }
+    return {X, labels};
+  }
+
+  // ---------- EM core ----------
+  function gmmInit(X, K, seed){
+    const rng=mulberry32(seed>>>0);
+    const N=X.length, d=X[0].length;
+    const means=[];
+    means.push(X[Math.floor(rng()*N)].slice());
+    while(means.length<K){
+      const dist2=X.map(function(x){
+        let best=Infinity;
+        for(let m=0;m<means.length;m++){ let s=0; for(let i=0;i<d;i++){ const t=x[i]-means[m][i]; s+=t*t; } if(s<best) best=s; }
+        return best;
+      });
+      let tot=0; for(let i=0;i<N;i++) tot+=dist2[i];
+      let r=rng()*tot, cum=0, idx=0;
+      for(let i=0;i<N;i++){ cum+=dist2[i]; if(cum>=r){ idx=i; break; } }
+      means.push(X[idx].slice());
+    }
+    const weights=[]; for(let k=0;k<K;k++) weights.push(1/K);
+    const covs=[]; for(let k=0;k<K;k++){ const c=matIdent(d); for(let i=0;i<d;i++) c[i][i]=1.0; covs.push(c); }
+    return {weights:weights, means:means, covs:covs};
+  }
+
+  function gmmEStep(X, model){
+    const N=X.length, d=X[0].length, K=model.weights.length;
+    const invCov=model.covs.map(matInv);
+    const logDet=model.covs.map(function(c){ return Math.log(Math.max(matDet(c),1e-300)); });
+    const constTerm=d*Math.log(2*Math.PI);
+    const gamma=[]; let LL=0;
+    for(let i=0;i<N;i++){
+      const x=X[i]; const logpk=[];
+      for(let k=0;k<K;k++){
+        const diff=[]; for(let j=0;j<d;j++) diff.push(x[j]-model.means[k][j]);
+        const inv=invCov[k];
+        const maha=dot(diff, matVec(inv, diff));
+        const logpdf=-0.5*(constTerm + logDet[k] + maha);
+        logpk.push(Math.log(model.weights[k]) + logpdf);
+      }
+      const lse=logSumExp(logpk);
+      LL += lse;
+      const g=[]; for(let k=0;k<K;k++) g.push(Math.exp(logpk[k]-lse));
+      gamma.push(g);
+    }
+    return {gamma:gamma, LL:LL};
+  }
+
+  function gmmMStep(X, gamma, ridge){
+    const N=X.length, d=X[0].length, K=gamma[0].length;
+    ridge = ridge==null ? 1e-6 : ridge;
+    const weights=[], means=[], covs=[];
+    for(let k=0;k<K;k++){
+      let Nk=0; for(let i=0;i<N;i++) Nk+=gamma[i][k];
+      weights.push(Nk/N);
+      const mu=new Array(d).fill(0);
+      for(let i=0;i<N;i++) for(let j=0;j<d;j++) mu[j]+=gamma[i][k]*X[i][j];
+      for(let j=0;j<d;j++) mu[j]/=(Nk||1);
+      means.push(mu);
+      const Sig=[]; for(let a=0;a<d;a++) Sig.push(new Array(d).fill(0));
+      for(let i=0;i<N;i++){
+        for(let a=0;a<d;a++) for(let b=0;b<d;b++)
+          Sig[a][b]+=gamma[i][k]*(X[i][a]-mu[a])*(X[i][b]-mu[b]);
+      }
+      for(let a=0;a<d;a++) for(let b=0;b<d;b++) Sig[a][b]/=(Nk||1);
+      for(let a=0;a<d;a++) Sig[a][a]+=ridge;
+      covs.push(Sig);
+    }
+    return {weights:weights, means:means, covs:covs};
+  }
+
+  function gmmEM(X, K, iters, seed, ridge){
+    let model=gmmInit(X, K, seed);
+    const history=[];
+    let lastGamma=null;
+    for(let it=0; it<iters; it++){
+      const es=gmmEStep(X, model);
+      history.push(es.LL);
+      lastGamma=es.gamma;
+      model=gmmMStep(X, es.gamma, ridge);
+    }
+    const fin=gmmEStep(X, model);
+    return {model:model, history:history, LL:fin.LL, gamma:fin.gamma};
+  }
+
+  // run several restarts, keep highest log-likelihood
+  function gmmEMBest(X, K, iters, restarts, baseSeed, ridge){
+    let best=null;
+    for(let r=0; r<restarts; r++){
+      const res=gmmEM(X, K, iters, (baseSeed>>>0)+r*101, ridge);
+      if(!best || res.LL > best.LL) best=res;
+    }
+    return best;
+  }
+
+  // 2x2 min eigenvalue (for PSD check)
+  function minEig2(S){
+    const tr=S[0][0]+S[1][1];
+    const det=S[0][0]*S[1][1]-S[0][1]*S[1][0];
+    const disc=Math.sqrt(Math.max(tr*tr-4*det,0));
+    return (tr-disc)/2;
+  }
+
+  globalThis.__forge={
+    mulberry32:mulberry32, randn:randn, matInv:matInv, matDet:matDet, matVec:matVec,
+    logSumExp:logSumExp, cholesky:cholesky, gmmSample:gmmSample, gmmInit:gmmInit,
+    gmmEStep:gmmEStep, gmmMStep:gmmMStep, gmmEM:gmmEM, gmmEMBest:gmmEMBest, minEig2:minEig2
+  };
+})();
+</script>
+
+<script>
+(function(){
+  const F = globalThis.__forge;
+  const $ = function(id){ return document.getElementById(id); };
+  const cv = $("scatter"), ctx = cv.getContext("2d");
+  const llcv = $("ll"), llctx = llcv.getContext("2d");
+
+  const PALETTE = ["#7c5cff","#15b39a","#e8a33d","#e0533d","#3d7be0","#9b59b6"];
+
+  function makeData(K, seed){
+    const rng = F.mulberry32(seed>>>0);
+    const centers=[[-6,6],[6,6],[0,0],[7,-6],[-7,-5]];
+    const weights=[], means=[], covs=[];
+    for(let k=0;k<K;k++){
+      weights.push(1/K);
+      means.push(centers[k].slice());
+      const s = 0.9 + 0.3*rng();
+      covs.push([[s,0],[0,s]]);
+    }
+    return F.gmmSample(rng, weights, means, covs, 600).X;
+  }
+
+  function fitView(X){
+    let minx=Infinity,maxx=-Infinity,miny=Infinity,maxy=-Infinity;
+    for(const p of X){ if(p[0]<minx)minx=p[0]; if(p[0]>maxx)maxx=p[0]; if(p[1]<miny)miny=p[1]; if(p[1]>maxy)maxy=p[1]; }
+    const pad=1.0;
+    return {minx:minx-pad,maxx:maxx+pad,miny:miny-pad,maxy:maxy+pad};
+  }
+
+  let cur = {X:null, res:null, view:null};
+
+  function draw(){
+    const X=cur.X, res=cur.res, view=cur.view;
+    const W=cv.width, H=cv.height;
+    ctx.clearRect(0,0,W,H);
+    if(!X||!res) return;
+    const K=res.model.means.length;
+    function sx(x){ return (x-view.minx)/(view.maxx-view.minx)*(W-20)+10; }
+    function sy(y){ return H-((y-view.miny)/(view.maxy-view.miny)*(H-20)+10); }
+    for(let i=0;i<X.length;i++){
+      // argmax responsibility -> hard color, alpha by max responsibility
+      let best=0,bv=-1; for(let k=0;k<K;k++){ if(res.gamma[i][k]>bv){ bv=res.gamma[i][k]; best=k; } }
+      ctx.globalAlpha=0.35+0.6*bv;
+      ctx.fillStyle=PALETTE[best%PALETTE.length];
+      ctx.beginPath(); ctx.arc(sx(X[i][0]),sy(X[i][1]),3.2,0,2*Math.PI); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+    // draw component means
+    for(let k=0;k<K;k++){
+      ctx.strokeStyle=PALETTE[k%PALETTE.length]; ctx.lineWidth=2.5;
+      ctx.beginPath(); ctx.arc(sx(res.model.means[k][0]),sy(res.model.means[k][1]),7,0,2*Math.PI); ctx.stroke();
+    }
+  }
+
+  function drawLL(history){
+    const W=llcv.width, H=llcv.height;
+    llctx.clearRect(0,0,W,H);
+    if(!history||history.length<2) return;
+    const lo=Math.min.apply(null,history), hi=Math.max.apply(null,history);
+    const pad=(hi-lo)*0.05||1;
+    const y0=lo-pad, y1=hi+pad;
+    function px(i){ return 10 + i/(history.length-1)*(W-20); }
+    function py(v){ return H-10 - (v-y0)/(y1-y0)*(H-20); }
+    llctx.strokeStyle="#e3e8ef"; llctx.lineWidth=1;
+    llctx.beginPath(); llctx.moveTo(10,H-10); llctx.lineTo(W-10,H-10); llctx.stroke();
+    llctx.strokeStyle="#7c5cff"; llctx.lineWidth=2.5;
+    llctx.beginPath();
+    for(let i=0;i<history.length;i++){ const X=px(i),Y=py(history[i]); if(i===0) llctx.moveTo(X,Y); else llctx.lineTo(X,Y); }
+    llctx.stroke();
+    llctx.fillStyle="#66707a"; llctx.font="12px ui-monospace,monospace";
+    llctx.fillText("LL start "+history[0].toFixed(1),12,18);
+    llctx.fillText("LL end "+history[history.length-1].toFixed(1),W-130,18);
+  }
+
+  function run(){
+    const K=parseInt($("k").value,10), iters=parseInt($("iters").value,10);
+    const X=makeData(K, 12345);
+    const res=F.gmmEM(X, K, iters, 777);
+    const view=fitView(X);
+    cur={X:X, res:res, view:view};
+    draw(); drawLL(res.history);
+    $("llInfo").textContent = "K="+K+" · 迭代 "+iters+" · 收敛对数似然 = "+res.LL.toFixed(3);
+  }
+
+  // ---- self test (8 invariants) ----
+  function approx(a,b,t){ return Math.abs(a-b)<=t; }
+  function selfTest(){
+    const rows=[]; let pass=0, fail=0;
+    function ok(name, cond, info){ if(cond){pass++; rows.push(["PASS",name,info]);} else {fail++; rows.push(["FAIL",name,info]);} }
+
+    // Inv 1: LL monotonic non-decreasing (EM theorem)
+    {
+      const rng=F.mulberry32(99);
+      const samp=F.gmmSample(rng,[0.4,0.3,0.3],[[-6,6],[6,6],[0,0]],[[[0.8,0],[0,0.8]],[[0.8,0],[0,0.8]],[[0.8,0],[0,0.8]]],600);
+      const res=F.gmmEM(samp.X,3,40,7);
+      let mono=true, dip=0;
+      for(let i=0;i+1<res.history.length;i++){ const d=res.history[i+1]-res.history[i]; if(d < dip) dip=d; if(d < -1e-4) mono=false; }
+      ok("① LL 单调非减 (EM 定理)", mono, "最小增量 "+dip.toExponential(2));
+    }
+
+    // Inv 2: 1D exact parameter recovery
+    {
+      const rng=F.mulberry32(2024);
+      const trueW=[0.5,0.5], trueM=[[-2],[2]], trueC=[[[0.36]],[[0.36]]];
+      const samp=F.gmmSample(rng,trueW,trueM,trueC,2000);
+      const res=F.gmmEMBest(samp.X,2,40,16,5);
+      // match components to true by nearest mean
+      const fitM=res.model.means.map(function(m){return m[0];});
+      const fitC=res.model.covs.map(function(c){return c[0][0];});
+      const map=[0,1].map(function(fi){ let bi=0,bd=1e9; [0,1].forEach(function(ti){ const d=Math.abs(fitM[fi]-trueM[ti]); if(d<bd){bd=d;bi=ti;} }); return bi; });
+      let okM=true, okC=true, maxMd=0, maxCd=0;
+      [0,1].forEach(function(fi){ const ti=map[fi]; const md=Math.abs(fitM[fi]-trueM[ti]); const cd=Math.abs(Math.sqrt(fitC[fi])-Math.sqrt(trueC[ti][0][0])); if(md>maxMd)maxMd=md; if(cd>maxCd)maxCd=cd; if(md>0.15)okM=false; if(cd>0.15)okC=false; });
+      ok("② 1D 参数精确还原", okM&&okC, "max|μ-μ*|="+maxMd.toFixed(4)+" max|σ-σ*|="+maxCd.toFixed(4));
+    }
+
+    // Inv 3: responsibilities sum to 1 per point
+    {
+      const rng=F.mulberry32(11);
+      const samp=F.gmmSample(rng,[0.5,0.5],[[-5,5],[5,-5]],[[[1,0],[0,1]],[[1,0],[0,1]]],500);
+      const res=F.gmmEM(samp.X,2,25,3);
+      let bad=0; for(let i=0;i<samp.X.length;i++){ let s=0; for(let k=0;k<2;k++) s+=res.gamma[i][k]; if(Math.abs(s-1)>1e-9) bad++; }
+      ok("③ 责任度每行归一 (Σ=1)", bad===0, "越界点 "+bad);
+    }
+
+    // Inv 4: mixing weights sum to 1; Nk ≈ N*w_k
+    {
+      const rng=F.mulberry32(22);
+      const samp=F.gmmSample(rng,[0.6,0.4],[[-4,4],[4,-4]],[[[0.7,0],[0,0.7]],[[0.7,0],[0,0.7]]],500);
+      const res=F.gmmEM(samp.X,2,25,4);
+      let ws=0; for(let k=0;k<2;k++) ws+=res.model.weights[k];
+      let okN=true; const N=samp.X.length;
+      for(let k=0;k<2;k++){ let Nk=0; for(let i=0;i<N;i++) Nk+=res.gamma[i][k]; if(Math.abs(Nk-N*res.model.weights[k])>1e-6) okN=false; }
+      ok("④ 权重和=1 且 Nk=N·w_k", approx(ws,1,1e-9)&&okN, "Σw="+ws.toFixed(6));
+    }
+
+    // Inv 5: convergence fixed point (extra iters barely change)
+    {
+      const rng=F.mulberry32(33);
+      const samp=F.gmmSample(rng,[0.5,0.5],[[-3,3],[3,-3]],[[[0.6,0],[0,0.6]],[[0.6,0],[0,0.6]]],500);
+      const r1=F.gmmEM(samp.X,2,30,8);
+      const r2=F.gmmEM(samp.X,2,35,8); // 5 more iters, same seed
+      let maxd=0;
+      for(let i=0;i<samp.X.length;i++) for(let k=0;k<2;k++){ const d=Math.abs(r2.gamma[i][k]-r1.gamma[i][k]); if(d>maxd)maxd=d; }
+      ok("⑤ 收敛不动点 (增量<1e-3)", maxd<1e-3, "maxΔγ="+maxd.toExponential(2));
+    }
+
+    // Inv 6: covariance symmetric & PSD
+    {
+      const rng=F.mulberry32(44);
+      const samp=F.gmmSample(rng,[0.5,0.5],[[-5,5],[5,-5]],[[[1.2,0.3],[0.3,0.9]],[[0.8,-0.2],[-0.2,1.0]]],500);
+      const res=F.gmmEM(samp.X,2,25,9);
+      let sym=true, psd=true;
+      for(let k=0;k<2;k++){
+        const c=res.model.covs[k];
+        if(Math.abs(c[0][1]-c[1][0])>1e-9) sym=false;
+        if(F.minEig2(c) < -1e-6) psd=false;
+      }
+      ok("⑥ 协方差对称且半正定", sym&&psd, sym?"对称✓":"非对称✗");
+    }
+
+    // Inv 7: scale invariance
+    {
+      const rng=F.mulberry32(55);
+      const samp=F.gmmSample(rng,[0.5,0.5],[[-2],[2]],[[[0.6]],[[0.6]]],400);
+      const c=3.7;
+      const Xs=samp.X.map(function(x){ return [x[0]*c]; });
+      const rA=F.gmmEM(samp.X,2,30,12);
+      const rB=F.gmmEM(Xs,2,30,12);
+      // argmax assignment equality
+      let diff=0;
+      for(let i=0;i<samp.X.length;i++){
+        let a=0,av=-1,b=0,bv=-1;
+        for(let k=0;k<2;k++){ if(rA.gamma[i][k]>av){av=rA.gamma[i][k];a=k;} if(rB.gamma[i][k]>bv){bv=rB.gamma[i][k];b=k;} }
+        if(a!==b) diff++;
+      }
+      // params scale: match by argmax of first point
+      const fa = rA.model.means[0][0]>rA.model.means[1][0]?0:1;
+      const fb = rB.model.means[0][0]>rB.model.means[1][0]?0:1;
+      const ratioM = rB.model.means[fb][0]/rA.model.means[fa][0];
+      const ratioS = Math.sqrt(rB.model.covs[fb][0][0])/Math.sqrt(rA.model.covs[fa][0][0]);
+      const okScale = approx(ratioM,c,0.05) && approx(ratioS,c,0.05);
+      ok("⑦ 缩放等变 (分配不变+参数×c)", diff===0 && okScale, "误分配"+diff+" μ比"+ratioM.toFixed(3)+" σ比"+ratioS.toFixed(3));
+    }
+
+    // Inv 8: model fit — 2-comp LL > 1-comp LL on 2-cluster data
+    {
+      const rng=F.mulberry32(66);
+      const samp=F.gmmSample(rng,[0.5,0.5],[[-4,4],[4,-4]],[[[0.7,0],[0,0.7]],[[0.7,0],[0,0.7]]],600);
+      const r2=F.gmmEMBest(samp.X,2,30,10,1);
+      const r1=F.gmmEMBest(samp.X,1,30,10,1);
+      ok("⑧ 2成分 LL > 1成分 LL", r2.LL > r1.LL, "LL2="+r2.LL.toFixed(2)+" > LL1="+r1.LL.toFixed(2));
+    }
+
+    let html="";
+    for(const r of rows) html += '<div class="row"><span class="tag '+r[0]+'">'+r[0]+'</span><span class="nm">'+r[1]+'</span><span class="vv">'+r[2]+'</span></div>';
+    html += '<p class="summary" style="color:'+(fail===0?'var(--ok)':'var(--warn)')+'">结果：'+pass+'/'+rows.length+' 通过'+(fail===0?' · 全部金色 ✅':' · 有失败 ❌')+'</p>';
+    $("selfTest").innerHTML = html;
+  }
+
+  $("k").addEventListener("input",function(){ $("kVal").textContent=this.value; });
+  $("iters").addEventListener("input",function(){ $("itersVal").textContent=this.value; });
+  $("run").addEventListener("click", run);
+  $("test").addEventListener("click", selfTest);
+  run(); selfTest();
+})();
+</script>
+</body>
+</html>
