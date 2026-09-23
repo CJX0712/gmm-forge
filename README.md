@@ -1,5 +1,12 @@
 # gmm-forge
 
+<p align="center">
+  <a href="https://github.com/CJX0712/gmm-forge/actions/workflows/ci.yml"><img src="https://github.com/CJX0712/gmm-forge/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/CJX0712/gmm-forge/releases"><img src="https://img.shields.io/github/v/release/CJX0712/gmm-forge?sort=semver" alt="release"></a>
+  <a href="https://github.com/CJX0712/gmm-forge/blob/main/LICENSE"><img src="https://img.shields.io/github/license/CJX0712/gmm-forge" alt="license"></a>
+  <img src="https://img.shields.io/badge/author-%E6%99%A8%E6%98%9F-1f6feb" alt="author">
+</p>
+
 手写高斯混合模型 (Gaussian Mixture Model) + 期望最大化 (EM) 算法，单文件 HTML、零依赖、零构建。纯 JavaScript 实现，浏览器内可交互运行，并带 8 项硬不变量自检。
 
 > Round 21 of the **forge** series — 纯 JS 手写 ML/AI 算法单文件可视化。
